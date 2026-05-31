@@ -64,22 +64,25 @@ export class AgentCore {
     const postData = JSON.stringify(body);
     const endpoint = this.settings.apiEndpoint || 'https://api.anthropic.com';
 
-    let hostname: string, port: number, path: string;
+    let hostname: string, port: number, apiPath: string;
     try {
       const url = new URL(endpoint);
       hostname = url.hostname;
       port = url.port ? parseInt(url.port) : (url.protocol === 'https:' ? 443 : 80);
-      path = url.pathname.replace(/\/$/, '') + '/v1/messages';
+      const basePath = url.pathname.replace(/\/$/, '');
+      apiPath = basePath.endsWith('/v1')
+        ? basePath + '/messages'
+        : basePath + '/v1/messages';
     } catch {
       hostname = 'api.anthropic.com';
       port = 443;
-      path = '/v1/messages';
+      apiPath = '/v1/messages';
     }
 
     const options: https.RequestOptions = {
       hostname,
       port,
-      path,
+      path: apiPath,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -232,10 +235,15 @@ export class AgentCore {
       basePath = '';
     }
 
+    // 避免重复 /v1：如果端点已以 /v1 结尾，不再拼接
+    const chatPath = basePath.endsWith('/v1')
+      ? basePath + '/chat/completions'
+      : basePath + '/v1/chat/completions';
+
     const options: https.RequestOptions = {
       hostname,
       port,
-      path: basePath + '/v1/chat/completions',
+      path: chatPath,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
