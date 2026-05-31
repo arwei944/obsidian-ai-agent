@@ -8,6 +8,7 @@ import { ContextManager } from './context-manager';
 import { ToolRegistry } from '../tools/tool-registry';
 import { ToolExecutor, type ToolExecutionCallbacks } from '../tools/tool-executor';
 import { generateId, createConversation } from '../types/message-types';
+import { logger } from '../utils/logger';
 
 export interface ConversationCallbacks {
   onTextDelta: (delta: string) => void;
@@ -76,6 +77,7 @@ export class ConversationManager {
 
     this.isRunning = true;
     this.abortController = new AbortController();
+    logger.messageSent(userText);
 
     // Add user message to conversation
     const userMsg: ChatMessage = {
@@ -94,6 +96,7 @@ export class ConversationManager {
     try {
       await this.runAgenticLoop(callbacks);
     } catch (error) {
+      logger.error('Chat', '发送消息失败', { message: (error as Error).message });
       callbacks.onError(error as Error);
     } finally {
       this.isRunning = false;
@@ -109,10 +112,12 @@ export class ConversationManager {
       if (this.abortController?.signal.aborted) break;
 
       iteration++;
+      logger.iterationStart(iteration, maxIterations);
       callbacks.onIterationStart(iteration);
 
       // Build context and system prompt
       const context = await this.contextManager.buildContext();
+      logger.contextBuilt(context.relevantFiles?.length ?? 0, 0);
       const systemPrompt = this.contextManager.buildSystemPrompt(context, this.settings.customSystemPrompt);
 
       // Build API messages from conversation history
@@ -130,10 +135,12 @@ export class ConversationManager {
       const response = await this.sendToApi(systemPrompt, toolSchemas, apiMessages, {
         onText: (delta) => {
           turnText += delta;
+          logger.textDelta(delta.length);
           callbacks.onTextDelta(delta);
         },
         onThinking: (delta) => {
           turnThinking += delta;
+          logger.thinkingDelta(delta.length);
           callbacks.onThinkingDelta(delta);
         },
         onToolUse: (_tool) => {
@@ -155,10 +162,15 @@ export class ConversationManager {
       );
 
       if (toolUseBlocks.length > 0) {
+        logger.info('Chat', `AI 请求了 ${toolUseBlocks.length} 个工具调用`);
         // Execute tools
         const toolCallbacks: ToolExecutionCallbacks = {
-          onToolStart: (name, input) => callbacks.onToolStart(name, input),
+          onToolStart: (name, input) => {
+            logger.toolExecute(name, input);
+            callbacks.onToolStart(name, input);
+          },
           onToolEnd: (name, result, duration) => {
+            logger.toolResult(name, duration, !!result.isError, result.content);
             turnToolCalls.push({
               id: '',
               name,
@@ -170,11 +182,14 @@ export class ConversationManager {
             callbacks.onToolEnd(name, result.content, !!result.isError, duration);
           },
           onConfirmationNeeded: async (tool, input) => {
-            return callbacks.onConfirmationNeeded(tool.name, input);
+            const confirmed = await callbacks.onConfirmationNeeded(tool.name, input);
+            logger.toolConfirmation(tool.name, confirmed);
+            return confirmed;
           },
         };
 
         const toolResults = await this.toolExecutor.executeAll(toolUseBlocks, toolCallbacks);
+        logger.info('Chat', `${toolResults.length} 个工具执行完成`);
 
         // Add assistant message with tool_use to conversation
         const assistantMsg: ChatMessage = {
@@ -204,6 +219,7 @@ export class ConversationManager {
       }
 
       // No tools — final text response
+      logger.messageReceived(turnText.slice(0, 200));
       const assistantMsg: ChatMessage = {
         role: 'assistant',
         content: turnText,
@@ -217,6 +233,7 @@ export class ConversationManager {
     }
 
     if (iteration >= maxIterations) {
+      logger.maxIterationsReached(maxIterations);
       const limitMsg: ChatMessage = {
         role: 'assistant',
         content: `[Reached maximum tool iterations (${maxIterations}). Stopping.]`,

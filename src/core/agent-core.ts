@@ -2,6 +2,8 @@ import * as https from 'https';
 import type { PluginSettings } from '../types/settings-types';
 import type { ApiMessage, ContentBlock, ApiResponse, SSEEvent, ToolUseBlock } from '../types/api-types';
 import { buildSSEParser } from './streaming';
+import { logger } from '../utils/logger';
+import { logger } from '../utils/logger';
 
 export interface AgentCallbacks {
   onText: (delta: string) => void;
@@ -45,6 +47,8 @@ export class AgentCore {
     }
 
     this.abortController = new AbortController();
+
+    logger.apiRequest(this.settings.apiProvider, this.settings.apiEndpoint || '(default)', this.settings.model, messages.length, tools.length);
 
     if (this.settings.apiProvider === 'openai') {
       await this.sendOpenAI(system, tools, messages, callbacks);
@@ -411,11 +415,16 @@ export class AgentCore {
     parser: { blocks: ContentBlock[]; onEvent: (e: SSEEvent) => void; onComplete: () => void },
     callbacks: AgentCallbacks
   ): void {
+    const reqStart = Date.now();
     const req = https.request(options, (res) => {
+      const reqDuration = Date.now() - reqStart;
+      logger.apiResponse(res.statusCode ?? 0, reqDuration);
+
       if (res.statusCode && res.statusCode >= 400) {
         let errorBody = '';
         res.on('data', (chunk: Buffer) => { errorBody += chunk.toString(); });
         res.on('end', () => {
+          logger.apiError(res.statusCode ?? 0, errorBody);
           try {
             const parsed = JSON.parse(errorBody);
             callbacks.onError(new Error(`API 错误 ${res.statusCode}: ${parsed.error?.message || errorBody}`));
@@ -426,10 +435,17 @@ export class AgentCore {
         return;
       }
 
+      logger.apiStreamStart();
       const sseParser = buildSSEParser(
         (event: SSEEvent) => parser.onEvent(event),
-        () => parser.onComplete(),
-        (error: Error) => callbacks.onError(error)
+        () => {
+          logger.apiStreamEnd();
+          parser.onComplete();
+        },
+        (error: Error) => {
+          logger.error('API', 'SSE 解析错误', { message: error.message });
+          callbacks.onError(error);
+        }
       );
 
       res.on('data', (chunk: Buffer) => sseParser.write(chunk.toString()));

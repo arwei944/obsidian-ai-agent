@@ -16,6 +16,7 @@ import { createWorkspaceTools } from './src/tools/workspace-tools';
 import { createNoteTools } from './src/tools/note-tools';
 import { createCommandTools } from './src/tools/command-tools';
 import { createSystemTools } from './src/tools/system-tools';
+import { logger } from './src/utils/logger';
 
 export default class ObsidianAIAgentPlugin extends Plugin {
   settings: PluginSettings = { ...DEFAULT_SETTINGS };
@@ -61,7 +62,10 @@ export default class ObsidianAIAgentPlugin extends Plugin {
     this.addCommand({
       id: 'open-chat',
       name: '打开 AI 对话',
-      callback: () => this.activateView(),
+      callback: () => {
+        logger.viewOpened();
+        this.activateView();
+      },
     });
 
     this.addCommand({
@@ -79,25 +83,33 @@ export default class ObsidianAIAgentPlugin extends Plugin {
       editorCallback: (editor) => {
         const selection = editor.getSelection();
         if (selection) {
+          logger.info('Command', '选中文本提问', { selection: selection.slice(0, 100) });
           this.activateView();
           // The context manager will pick up the selection automatically
         }
       },
     });
 
+    this.addCommand({
+      id: 'export-logs',
+      name: '导出 AI 日志',
+      callback: () => this.exportLogs(),
+    });
+
     // Settings tab
     this.addSettingTab(new AIAgentSettingTab(this.app, this));
 
-    console.log('AI 智能体已加载');
+    logger.pluginLoaded();
   }
 
   async onunload(): Promise<void> {
     this.chatView = null;
-    console.log('AI 智能体已卸载');
+    logger.pluginUnloaded();
   }
 
   async saveSettings(): Promise<void> {
     await this.settingsStore.save(this.settings);
+    logger.settingsSaved(this.settings as Record<string, unknown>);
     this.conversationManager.updateSettings(this.settings);
     if (this.chatView) {
       this.chatView.updateSettings(this.settings);
@@ -113,9 +125,22 @@ export default class ObsidianAIAgentPlugin extends Plugin {
     this.registry.registerAll(createNoteTools(this.app));
     this.registry.registerAll(createCommandTools(this.app));
     this.registry.registerAll(createSystemTools(this.app));
+    const toolCount = this.registry.getTools().length;
+    logger.info('Plugin', `已注册 ${toolCount} 个工具`);
+  }
+
+  private async exportLogs(): Promise<void> {
+    const logs = logger.toJSON();
+    const summary = logger.getSummary();
+    const now = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `ai-agent-logs-${now}.md`;
+    const content = `# AI 智能体日志\n\n**导出时间**: ${new Date().toLocaleString()}\n\n## 统计\n\n${summary}\n\n## 日志详情\n\n\`\`\`json\n${logs}\n\`\`\`\n`;
+    await this.app.vault.create(fileName, content);
+    new Notice(`日志已导出为 ${fileName}`);
   }
 
   private async activateView(): Promise<void> {
+    logger.debug('UI', '激活聊天视图');
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
     if (existing.length > 0) {
       this.app.workspace.revealLeaf(existing[0]);

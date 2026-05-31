@@ -4,6 +4,7 @@ import type { ToolDefinition, ExecutionContext, ToolResult } from '../types/tool
 import type { PluginSettings, ConfirmationPolicy } from '../types/settings-types';
 import type { ToolRegistry } from './tool-registry';
 import { SnapshotStore } from '../storage/snapshot-store';
+import { logger } from '../utils/logger';
 
 export interface ToolExecutionCallbacks {
   onToolStart: (name: string, input: Record<string, unknown>) => void;
@@ -44,6 +45,7 @@ export class ToolExecutor {
     const tool = this.registry.getTool(block.name);
 
     if (!tool) {
+      logger.toolNotFound(block.name);
       return {
         type: 'tool_result',
         tool_use_id: block.id,
