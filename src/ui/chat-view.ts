@@ -9,48 +9,43 @@ import { createConversation } from '../types/message-types';
 
 export const VIEW_TYPE_CHAT = 'obsidian-ai-agent-chat';
 
-const AVATAR_AI = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>`;
-const AVATAR_USER = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+const AVATAR_AI = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>`;
+const AVATAR_USER = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
 
 function renderMarkdown(text: string): string {
   let html = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
-  // code blocks
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
     `<pre class="ai-code-block"><code>${code.trim()}</code></pre>`);
-  // inline code
   html = html.replace(/`([^`]+)`/g, '<code class="ai-inline-code">$1</code>');
-  // bold
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  // italic
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  // strikethrough
   html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
-  // headers
   html = html.replace(/^###### (.+)$/gm, '<h6>$1</h6>');
   html = html.replace(/^##### (.+)$/gm, '<h5>$1</h5>');
   html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
   html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-  // horizontal rule
   html = html.replace(/^---$/gm, '<hr/>');
-  // blockquote
   html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-  // unordered list
-  html = html.replace(/^[*-] (.+)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
-  // ordered list
   html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
-  // links
+  html = html.replace(/^\* (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>[\s\S]*?<\/li>)/g, (match) => {
+    if (!match.startsWith('<ul>') && !match.startsWith('<ol>')) return `<ul>${match}</ul>`;
+    return match;
+  });
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-  // images
   html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2"/>');
-  // newlines
   html = html.replace(/\n/g, '<br/>');
   return html;
+}
+
+function formatTimestamp(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 export class ChatView extends ItemView {
@@ -60,11 +55,18 @@ export class ChatView extends ItemView {
   private settings: PluginSettings;
   private messagesEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
+  private sendBtnEl!: HTMLButtonElement;
   private isStreaming = false;
-  private streamingContentEl: HTMLElement | null = null;
-  private streamingThinkingEl: HTMLElement | null = null;
-  private streamingThinkingContentEl: HTMLElement | null = null;
-  private streamingToolCallsEl: HTMLElement | null = null;
+
+  // Streaming state
+  private streamContainerEl: HTMLElement | null = null;
+  private streamThinkingEl: HTMLElement | null = null;
+  private streamThinkingContentEl: HTMLElement | null = null;
+  private streamThinkingTimer: ReturnType<typeof setInterval> | null = null;
+  private streamThinkingSeconds = 0;
+  private streamToolCallsEl: HTMLElement | null = null;
+  private streamContentEl: HTMLElement | null = null;
+  private streamActionsEl: HTMLElement | null = null;
   private streamBuffer = '';
   private thinkingBuffer = '';
 
@@ -122,14 +124,22 @@ export class ChatView extends ItemView {
       this.inputEl.style.height = 'auto';
       this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 120) + 'px';
     });
-    const sendBtn = inputWrapper.createEl('button', { cls: 'ai-send-btn', attr: { title: '发送' } });
-    sendBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>`;
-    sendBtn.addEventListener('click', () => this.handleSend());
+    this.sendBtnEl = inputWrapper.createEl('button', { cls: 'ai-send-btn', attr: { title: '发送' } });
+    this.sendBtnEl.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>`;
+    this.sendBtnEl.addEventListener('click', () => {
+      if (this.isStreaming) {
+        this.handleStop();
+      } else {
+        this.handleSend();
+      }
+    });
 
     this.renderMessages();
   }
 
-  async onClose(): Promise<void> {}
+  async onClose(): Promise<void> {
+    if (this.streamThinkingTimer) clearInterval(this.streamThinkingTimer);
+  }
 
   private createIconBtn(parent: HTMLElement, title: string, pathD: string, onClick: () => void): void {
     const btn = parent.createEl('button', { cls: 'ai-icon-btn', attr: { title } });
@@ -137,7 +147,10 @@ export class ChatView extends ItemView {
     btn.addEventListener('click', onClick);
   }
 
-  // ── 渲染已有消息 ──
+  // ══════════════════════════════════════════
+  //  Message Rendering
+  // ══════════════════════════════════════════
+
   private renderMessages(): void {
     this.messagesEl.empty();
     const conv = this.conversationManager.getConversation();
@@ -146,7 +159,6 @@ export class ChatView extends ItemView {
       return;
     }
     for (const msg of conv.messages) {
-      if (msg.role === 'user' && msg.content.startsWith('[') && msg.content.includes('tool_result')) continue;
       this.renderMessage(msg);
     }
     this.scrollToBottom();
@@ -162,79 +174,158 @@ export class ChatView extends ItemView {
 
   private renderMessage(msg: ChatMessage): void {
     const isUser = msg.role === 'user';
-    const row = this.messagesEl.createDiv({ cls: `ai-msg-row ai-msg-row-${msg.role}` });
 
-    // Avatar
-    const avatar = row.createDiv({ cls: 'ai-msg-avatar' });
-    avatar.innerHTML = isUser ? AVATAR_USER : AVATAR_AI;
+    // Root wrapper (full width)
+    const root = this.messagesEl.createDiv({ cls: 'ai-msg-root' });
 
-    // Bubble
-    const bubble = row.createDiv({ cls: 'ai-msg-bubble' });
-    const nameEl = bubble.createDiv({ cls: 'ai-msg-name' });
-    nameEl.textContent = isUser ? '你' : 'AI 智能体';
+    // Message card (group for hover effects)
+    const card = root.createDiv({ cls: 'ai-msg-card ai-msg-card-' + msg.role });
+    if (isUser) {
+      card.style.backgroundColor = 'var(--background-modifier-hover)';
+    }
+
+    // Inner column
+    const inner = card.createDiv({ cls: 'ai-msg-inner' });
+
+    // Header row: avatar + name + time
+    const headerRow = inner.createDiv({ cls: 'ai-msg-header' });
+    const avatarEl = headerRow.createDiv({ cls: 'ai-msg-avatar' });
+    avatarEl.innerHTML = isUser ? AVATAR_USER : AVATAR_AI;
+    headerRow.createSpan({ cls: 'ai-msg-name', text: isUser ? '你' : 'AI 智能体' });
+    headerRow.createSpan({ cls: 'ai-msg-time', text: formatTimestamp(msg.timestamp) });
 
     // Tool calls
     if (msg.toolCalls && msg.toolCalls.length > 0) {
-      const toolsEl = bubble.createDiv({ cls: 'ai-msg-tools' });
       for (const tc of msg.toolCalls) {
-        const toolEl = toolsEl.createDiv({ cls: `ai-msg-tool-badge ${tc.isError ? 'error' : ''}` });
-        toolEl.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
-        toolEl.createSpan({ text: tc.name });
-        toolEl.createSpan({ cls: 'ai-tool-dur', text: `${tc.duration}ms` });
-        if (tc.isError) toolEl.createSpan({ cls: 'ai-tool-err', text: '失败' });
+        this.renderToolCallBanner(inner, tc.name, tc.isError, tc.duration);
       }
     }
 
     // Content
-    const contentEl = bubble.createDiv({ cls: 'ai-msg-content' });
+    const contentEl = inner.createDiv({ cls: 'ai-msg-content' });
     if (isUser) {
       contentEl.textContent = msg.content;
     } else {
       contentEl.innerHTML = renderMarkdown(msg.content);
     }
 
-    // Time
-    const timeEl = bubble.createDiv({ cls: 'ai-msg-time' });
-    timeEl.textContent = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // Action buttons (on hover, AI only)
+    if (!isUser) {
+      const actionsRow = inner.createDiv({ cls: 'ai-msg-actions' });
+      this.createActionBtn(actionsRow, '复制', '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>', () => {
+        navigator.clipboard.writeText(msg.content);
+        new Notice('已复制到剪贴板');
+      });
+    }
   }
 
-  // ── 流式输出：创建占位消息 ──
+  private createActionBtn(parent: HTMLElement, title: string, pathD: string, onClick: () => void): void {
+    const btn = parent.createEl('button', { cls: 'ai-action-btn', attr: { title } });
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${pathD}</svg>`;
+    btn.addEventListener('click', onClick);
+  }
+
+  private renderToolCallBanner(parent: HTMLElement, name: string, isError: boolean, duration: number): void {
+    const banner = parent.createDiv({ cls: 'ai-tool-banner' });
+    const header = banner.createDiv({ cls: 'ai-tool-banner-header' });
+
+    const left = header.createDiv({ cls: 'ai-tool-banner-left' });
+    left.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
+    left.createSpan({ text: name });
+
+    const right = header.createDiv({ cls: 'ai-tool-banner-right' });
+    if (isError) {
+      right.createSpan({ cls: 'ai-tool-banner-error', text: '失败' });
+    } else {
+      right.createSpan({ cls: 'ai-tool-banner-duration', text: `${duration}ms` });
+    }
+  }
+
+  // ══════════════════════════════════════════
+  //  Streaming Message
+  // ══════════════════════════════════════════
+
   private createStreamingMessage(): void {
-    const row = this.messagesEl.createDiv({ cls: 'ai-msg-row ai-msg-row-assistant' });
-    row.id = 'ai-streaming-row';
+    const root = this.messagesEl.createDiv({ cls: 'ai-msg-root' });
+    root.id = 'ai-streaming-root';
 
-    const avatar = row.createDiv({ cls: 'ai-msg-avatar' });
-    avatar.innerHTML = AVATAR_AI;
+    const card = root.createDiv({ cls: 'ai-msg-card ai-msg-card-assistant' });
+    const inner = card.createDiv({ cls: 'ai-msg-inner' });
 
-    const bubble = row.createDiv({ cls: 'ai-msg-bubble' });
-    bubble.createDiv({ cls: 'ai-msg-name', text: 'AI 智能体' });
+    // Header
+    const headerRow = inner.createDiv({ cls: 'ai-msg-header' });
+    const avatarEl = headerRow.createDiv({ cls: 'ai-msg-avatar' });
+    avatarEl.innerHTML = AVATAR_AI;
+    headerRow.createSpan({ cls: 'ai-msg-name', text: 'AI 智能体' });
+    headerRow.createSpan({ cls: 'ai-msg-time', text: formatTimestamp(Date.now()) });
 
-    // Thinking
-    this.streamingThinkingEl = bubble.createDiv({ cls: 'ai-msg-thinking-wrap ai-thinking-expanded' });
-    const thinkingHeader = this.streamingThinkingEl.createDiv({ cls: 'ai-thinking-header' });
-    const thinkingIcon = thinkingHeader.createSpan({ cls: 'ai-thinking-icon' });
-    thinkingIcon.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>`;
-    const thinkingLabel = thinkingHeader.createSpan({ text: '思考中...' });
-    thinkingLabel.addClass('ai-thinking-label');
-    // 折叠按钮
-    const toggleBtn = thinkingHeader.createSpan({ cls: 'ai-thinking-toggle' });
-    toggleBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`;
-    thinkingHeader.addEventListener('click', () => {
-      this.streamingThinkingEl?.toggleClass('ai-thinking-expanded');
-    });
-    this.streamingThinkingContentEl = this.streamingThinkingEl.createDiv({ cls: 'ai-thinking-content' });
+    // Thinking block
+    this.streamThinkingEl = inner.createDiv({ cls: 'ai-reasoning-block ai-reasoning-active' });
+    const thinkingHeader = this.streamThinkingEl.createDiv({ cls: 'ai-reasoning-header' });
+    // Spinner icon
+    const iconEl = thinkingHeader.createSpan({ cls: 'ai-reasoning-icon' });
+    iconEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ai-spin-icon"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`;
+    thinkingHeader.createSpan({ cls: 'ai-reasoning-label', text: '思考中...' });
+    // Timer
+    const timerEl = thinkingHeader.createSpan({ cls: 'ai-reasoning-timer' });
+    timerEl.textContent = '0s';
+    this.streamThinkingSeconds = 0;
+    this.streamThinkingTimer = setInterval(() => {
+      this.streamThinkingSeconds++;
+      timerEl.textContent = `${this.streamThinkingSeconds}s`;
+    }, 1000);
 
-    // Tool calls
-    this.streamingToolCallsEl = bubble.createDiv({ cls: 'ai-msg-tools' });
+    // Thinking content
+    this.streamThinkingContentEl = this.streamThinkingEl.createDiv({ cls: 'ai-reasoning-content' });
+
+    // Tool calls container
+    this.streamToolCallsEl = inner.createDiv({ cls: 'ai-stream-tools' });
 
     // Text content
-    this.streamingContentEl = bubble.createDiv({ cls: 'ai-msg-content' });
+    this.streamContentEl = inner.createDiv({ cls: 'ai-msg-content' });
 
-    const timeEl = bubble.createDiv({ cls: 'ai-msg-time' });
-    timeEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // Actions row (hidden during streaming)
+    this.streamActionsEl = inner.createDiv({ cls: 'ai-msg-actions ai-msg-actions-hidden' });
+    this.createActionBtn(this.streamActionsEl, '复制', '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>', () => {
+      if (this.streamBuffer) {
+        navigator.clipboard.writeText(this.streamBuffer);
+        new Notice('已复制到剪贴板');
+      }
+    });
+
+    this.scrollToBottom();
   }
 
-  // ── 发送消息 ──
+  private finishStreaming(): void {
+    if (this.streamThinkingTimer) {
+      clearInterval(this.streamThinkingTimer);
+      this.streamThinkingTimer = null;
+    }
+    // Finalize thinking block
+    if (this.streamThinkingEl) {
+      this.streamThinkingEl.removeClass('ai-reasoning-active');
+      this.streamThinkingEl.addClass('ai-reasoning-done');
+      const label = this.streamThinkingEl.querySelector('.ai-reasoning-label');
+      if (label) label.textContent = `思考 ${this.streamThinkingSeconds}s`;
+      const icon = this.streamThinkingEl.querySelector('.ai-reasoning-icon');
+      if (icon) icon.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`;
+    }
+    // Show action buttons
+    if (this.streamActionsEl) {
+      this.streamActionsEl.removeClass('ai-msg-actions-hidden');
+    }
+    // Clear refs
+    this.streamContentEl = null;
+    this.streamThinkingEl = null;
+    this.streamThinkingContentEl = null;
+    this.streamToolCallsEl = null;
+    this.streamActionsEl = null;
+  }
+
+  // ══════════════════════════════════════════
+  //  Sending
+  // ══════════════════════════════════════════
+
   private async handleSend(): Promise<void> {
     const text = this.inputEl.value.trim();
     if (!text || this.isStreaming) return;
@@ -244,59 +335,70 @@ export class ChatView extends ItemView {
     this.isStreaming = true;
     this.streamBuffer = '';
     this.thinkingBuffer = '';
+    this.updateSendButton();
 
-    // 先渲染已有消息
+    // Render existing messages + new user message immediately
     this.renderMessages();
-    // 创建流式消息占位
-    this.createStreamingMessage();
-    this.scrollToBottom();
+    this.renderUserMessage(text);
 
     const callbacks: ConversationCallbacks = {
       onTextDelta: (delta) => {
-        // 首次收到文本时，自动折叠思考过程
-        if (this.streamBuffer === '' && this.thinkingBuffer && this.streamingThinkingEl) {
-          this.streamingThinkingEl.removeClass('ai-thinking-expanded');
-          const label = this.streamingThinkingEl.querySelector('.ai-thinking-label');
-          if (label) label.textContent = '思考过程';
+        // First text delta: create streaming message if not created, collapse thinking
+        if (this.streamBuffer === '' && !document.getElementById('ai-streaming-root')) {
+          this.createStreamingMessage();
+          this.collapseThinking();
         }
         this.streamBuffer += delta;
-        if (this.streamingContentEl) {
-          this.streamingContentEl.innerHTML = renderMarkdown(this.streamBuffer);
+        if (this.streamContentEl) {
+          this.streamContentEl.innerHTML = renderMarkdown(this.streamBuffer);
         }
         this.scrollToBottom();
       },
       onThinkingDelta: (delta) => {
+        // First thinking delta: create streaming message
+        if (!document.getElementById('ai-streaming-root')) {
+          this.createStreamingMessage();
+        }
         this.thinkingBuffer += delta;
-        if (this.streamingThinkingEl && this.streamingThinkingContentEl) {
-          this.streamingThinkingEl.style.display = 'block';
-          this.streamingThinkingContentEl.textContent = this.thinkingBuffer;
-          // 自动滚动思考内容到底部
-          this.streamingThinkingContentEl.scrollTop = this.streamingThinkingContentEl.scrollHeight;
+        if (this.streamThinkingContentEl) {
+          this.streamThinkingContentEl.textContent = this.thinkingBuffer;
+          this.streamThinkingContentEl.scrollTop = this.streamThinkingContentEl.scrollHeight;
         }
         this.scrollToBottom();
       },
       onToolStart: (name, _input) => {
-        if (this.streamingToolCallsEl) {
-          const badge = this.streamingToolCallsEl.createDiv({ cls: 'ai-msg-tool-badge running' });
-          badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
-          badge.createSpan({ text: name });
-          const spinner = badge.createDiv({ cls: 'ai-tool-spinner' });
+        if (!document.getElementById('ai-streaming-root')) {
+          this.createStreamingMessage();
+          this.collapseThinking();
+        }
+        if (this.streamToolCallsEl) {
+          const banner = this.streamToolCallsEl.createDiv({ cls: 'ai-tool-banner ai-tool-banner-active' });
+          banner.id = `ai-tool-active-${name}-${Date.now()}`;
+          const header = banner.createDiv({ cls: 'ai-tool-banner-header' });
+          const left = header.createDiv({ cls: 'ai-tool-banner-left' });
+          left.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
+          left.createSpan({ text: name + '...' });
+          header.createDiv({ cls: 'ai-tool-spinner' });
         }
         this.scrollToBottom();
       },
-      onToolEnd: (_name, _result, _isError, _duration) => {},
+      onToolEnd: (name, _result, isError, duration) => {
+        // Replace active banner with completed banner
+        const activeBanner = this.streamToolCallsEl?.querySelector('.ai-tool-banner-active');
+        if (activeBanner) {
+          activeBanner.remove();
+        }
+        if (this.streamToolCallsEl) {
+          this.renderToolCallBanner(this.streamToolCallsEl, name, isError, duration);
+        }
+      },
       onMessageComplete: () => {
-        this.streamingContentEl = null;
-        this.streamingThinkingEl = null;
-        this.streamingThinkingContentEl = null;
-        this.streamingToolCallsEl = null;
+        this.finishStreaming();
       },
       onError: (error) => {
         new Notice(`AI 错误: ${error.message}`);
-        this.streamingContentEl = null;
-        this.streamingThinkingEl = null;
-        this.streamingThinkingContentEl = null;
-        this.streamingToolCallsEl = null;
+        if (this.streamThinkingTimer) clearInterval(this.streamThinkingTimer);
+        this.finishStreaming();
       },
       onIterationStart: () => {},
       onConfirmationNeeded: async () => true,
@@ -304,9 +406,65 @@ export class ChatView extends ItemView {
 
     await this.conversationManager.sendUserMessage(text, callbacks);
     this.isStreaming = false;
+    this.updateSendButton();
     this.renderMessages();
     await this.conversationStore.save(this.conversationManager.getConversation());
   }
+
+  private renderUserMessage(text: string): void {
+    const root = this.messagesEl.createDiv({ cls: 'ai-msg-root' });
+    const card = root.createDiv({ cls: 'ai-msg-card ai-msg-card-user' });
+    card.style.backgroundColor = 'var(--background-modifier-hover)';
+    const inner = card.createDiv({ cls: 'ai-msg-inner' });
+    const headerRow = inner.createDiv({ cls: 'ai-msg-header' });
+    const avatarEl = headerRow.createDiv({ cls: 'ai-msg-avatar' });
+    avatarEl.innerHTML = AVATAR_USER;
+    headerRow.createSpan({ cls: 'ai-msg-name', text: '你' });
+    headerRow.createSpan({ cls: 'ai-msg-time', text: formatTimestamp(Date.now()) });
+    const contentEl = inner.createDiv({ cls: 'ai-msg-content' });
+    contentEl.textContent = text;
+    this.scrollToBottom();
+  }
+
+  private collapseThinking(): void {
+    if (this.streamThinkingEl && this.thinkingBuffer) {
+      this.streamThinkingEl.removeClass('ai-reasoning-active');
+      this.streamThinkingEl.addClass('ai-reasoning-done');
+      const label = this.streamThinkingEl.querySelector('.ai-reasoning-label');
+      if (label) label.textContent = `思考 ${this.streamThinkingSeconds}s`;
+      const icon = this.streamThinkingEl.querySelector('.ai-reasoning-icon');
+      if (icon) icon.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`;
+      if (this.streamThinkingTimer) {
+        clearInterval(this.streamThinkingTimer);
+        this.streamThinkingTimer = null;
+      }
+    }
+  }
+
+  private handleStop(): void {
+    // Abort is handled by conversationManager
+    this.isStreaming = false;
+    this.updateSendButton();
+    this.finishStreaming();
+    this.renderMessages();
+  }
+
+  private updateSendButton(): void {
+    if (!this.sendBtnEl) return;
+    if (this.isStreaming) {
+      this.sendBtnEl.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
+      this.sendBtnEl.title = '停止';
+      this.sendBtnEl.addClass('ai-send-btn-stop');
+    } else {
+      this.sendBtnEl.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>`;
+      this.sendBtnEl.title = '发送';
+      this.sendBtnEl.removeClass('ai-send-btn-stop');
+    }
+  }
+
+  // ══════════════════════════════════════════
+  //  Navigation
+  // ══════════════════════════════════════════
 
   private handleNewChat(): void {
     this.conversationManager.setConversation(createConversation());
